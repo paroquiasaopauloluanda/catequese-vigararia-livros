@@ -20,7 +20,7 @@ export function GlobalRecordsPage() {
 
   const [filters, setFilters] = useState({ parish:'', stage:'', age:'', status:'', search:'' });
   const [confirmId,  setConfirmId]  = useState<string|null>(null);
-  const [confirmMsg, setConfirmMsg] = useState({ title:'', message:'', action:()=>{} });
+  const [confirmMsg, setConfirmMsg] = useState<{ title:string; message:string; action:()=>Promise<void> }>({ title:'', message:'', action: async ()=>{} });
   const [delLoading, setDelLoading] = useState(false);
   const [editRec,    setEditRec]    = useState<CatechesisRecord|null>(null);
   const [saving,     setSaving]     = useState(false);
@@ -43,7 +43,7 @@ export function GlobalRecordsPage() {
     (!filters.search || r.book_name.toLowerCase().includes(filters.search.toLowerCase()))
   ), [records, filters]);
 
-  const confirm = (title: string, message: string, action: ()=>void) => {
+  const confirm = (title: string, message: string, action: ()=>Promise<void>) => {
     setConfirmMsg({ title, message, action });
     setConfirmId('__pending__');
   };
@@ -74,18 +74,31 @@ export function GlobalRecordsPage() {
   };
 
   const handleConfirmRecord = (id: string) => {
-    confirm('Confirmar Registo', 'Marcar este registo como confirmado?', async () => {
-      await callApi('confirmRecord', { id });
-      await qc.invalidateQueries({ queryKey: ['records'] });
-      toast('Registo confirmado.');
+    // Optimistic confirm — update status in cache immediately
+    const prev = qc.getQueryData<{ data: CatechesisRecord[] }>(['records']);
+    qc.setQueryData(['records'], (old: { data: CatechesisRecord[] } | undefined) => ({
+      data: (old?.data ?? []).map(r => r.id === id ? { ...r, status: 'confirmed' as const } : r),
+    }));
+    toast('Registo confirmado.');
+    callApi('confirmRecord', { id }).catch(() => {
+      qc.setQueryData(['records'], prev);
+      toast('Erro ao confirmar registo.', 'error');
     });
   };
 
   const handleDelete = (id: string) => {
     confirm('Eliminar Registo', 'Esta acção é irreversível.', async () => {
-      await callApi('deleteRecord', { id });
-      await qc.invalidateQueries({ queryKey: ['records'] });
+      const prev = qc.getQueryData<{ data: CatechesisRecord[] }>(['records']);
+      qc.setQueryData(['records'], (old: { data: CatechesisRecord[] } | undefined) => ({
+        data: (old?.data ?? []).filter(r => r.id !== id),
+      }));
       toast('Registo eliminado.');
+      try {
+        await callApi('deleteRecord', { id });
+      } catch (e: unknown) {
+        qc.setQueryData(['records'], prev);
+        toast(e instanceof Error ? e.message : 'Erro ao eliminar.', 'error');
+      }
     });
   };
 

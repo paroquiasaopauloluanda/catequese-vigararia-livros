@@ -5,6 +5,7 @@ import { callApi } from '../api/sheets';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import type { Stage, AgeGroup, Book, CatechesisRecord, Parish } from '../types';
+// CatechesisRecord used for cache update type
 import { c, r, shadow } from '../styles/theme';
 import { FormField, Input, Select, Textarea } from '../components/FormField';
 import { Btn } from '../components/Btn';
@@ -119,8 +120,27 @@ export function NewRecordPage() {
   const handleSubmit = async () => {
     setLoading(true);
     try {
-      await callApi('insertRecord', form);
-      await qc.invalidateQueries({ queryKey: ['records'] });
+      const res = await callApi('insertRecord', form) as { success: boolean; id: string };
+      const sess = JSON.parse(localStorage.getItem('catequese_session') || '{}');
+      const ts   = new Date().toISOString();
+      // Add to cache directly — no refetch needed
+      qc.setQueryData(['records'], (old: { data: CatechesisRecord[] } | undefined) => ({
+        data: [...(old?.data ?? []), {
+          id:         res.id,
+          parish_id:  isAdmin ? form.parish_id : (sess.parishId || ''),
+          stage_id:   form.stage_id,
+          age_id:     form.age_id,
+          book_name:  form.book_name,
+          author:     form.author  || null,
+          publisher:  form.publisher || null,
+          year:       form.year    || null,
+          notes:      form.notes   || null,
+          status:     'submitted' as const,
+          created_by: sess.userId || null,
+          created_at: ts,
+          updated_at: ts,
+        }],
+      }));
       toast('Registo submetido com sucesso!');
       navigate('/records');
     } catch (err: unknown) {

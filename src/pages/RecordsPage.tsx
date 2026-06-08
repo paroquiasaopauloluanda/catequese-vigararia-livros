@@ -21,7 +21,6 @@ export function RecordsPage() {
 
   const [filters, setFilters] = useState({ stage:'', age:'', status:'', search:'' });
   const [confirmId, setConfirmId] = useState<string|null>(null);
-  const [delLoading, setDelLoading] = useState(false);
   const [editRec, setEditRec] = useState<CatechesisRecord|null>(null);
   const [saving, setSaving]   = useState(false);
 
@@ -44,16 +43,19 @@ export function RecordsPage() {
 
   const handleDelete = async () => {
     if (!confirmId) return;
-    setDelLoading(true);
+    const id  = confirmId;
+    const prev = qc.getQueryData<{ data: CatechesisRecord[] }>(['records']);
+    // Optimistic: remove instantly from UI
+    qc.setQueryData(['records'], (old: { data: CatechesisRecord[] } | undefined) => ({
+      data: (old?.data ?? []).filter(r => r.id !== id),
+    }));
+    setConfirmId(null);
+    toast('Registo eliminado.');
     try {
-      await callApi('deleteRecord', { id: confirmId });
-      await qc.invalidateQueries({ queryKey: ['records'] });
-      toast('Registo eliminado.');
+      await callApi('deleteRecord', { id });
     } catch (e: unknown) {
+      qc.setQueryData(['records'], prev); // rollback
       toast(e instanceof Error ? e.message : 'Erro ao eliminar.', 'error');
-    } finally {
-      setDelLoading(false);
-      setConfirmId(null);
     }
   };
 
@@ -213,7 +215,6 @@ export function RecordsPage() {
         open={!!confirmId}
         onClose={() => setConfirmId(null)}
         onConfirm={handleDelete}
-        loading={delLoading}
         title="Eliminar Registo"
         message="Esta acção é irreversível. O registo será eliminado permanentemente."
       />

@@ -46,6 +46,7 @@ function doGet(e) {
 
 function dispatch(action, user, payload) {
   switch (action) {
+    case 'getInit':        return getInit(user);  // batch: stages+ages+parishes+books in 1 call
     case 'getParishes':    return getParishes(user);
     case 'getStages':      return getStages();
     case 'getAgeGroups':   return getAgeGroups();
@@ -77,6 +78,30 @@ function dispatch(action, user, payload) {
 
     default: return { error: 'Acção desconhecida: ' + action };
   }
+}
+
+// ── Cache helpers ─────────────────────────────────────────────────
+
+function cacheGet(key) {
+  try {
+    var v = CacheService.getScriptCache().get(key);
+    return v ? JSON.parse(v) : null;
+  } catch(e) { return null; }
+}
+
+function cachePut(key, val, ttl) {
+  try {
+    var s = JSON.stringify(val);
+    if (s.length < 95000) CacheService.getScriptCache().put(key, s, ttl || 600);
+  } catch(e) {}
+}
+
+function cacheRemove(key) {
+  try { CacheService.getScriptCache().remove(key); } catch(e) {}
+}
+
+function cacheRemoveAll(keys) {
+  try { CacheService.getScriptCache().removeAll(keys); } catch(e) {}
 }
 
 // ── Utilities ────────────────────────────────────────────────────
@@ -195,16 +220,31 @@ function handleAuth(payload) {
 
 function validateSession(userId, token) {
   if (!userId || !token) return null;
+  // Cache session for 10 min — avoids reading user_profiles sheet on every request
+  var cKey = 'sess_' + token;
+  var cached = cacheGet(cKey);
+  if (cached && String(cached.id) === String(userId)) return cached;
+
   var users = sheetToObjects(getSheet('user_profiles'));
-  return users.filter(function(u) {
+  var user  = users.filter(function(u) {
     return String(u.id) === String(userId) && u.session_token === token && u.status === 'active';
-  })[0] || null;
+  })[0];
+
+  if (!user) return null;
+  var safe = { id: user.id, username: user.username, display_name: user.display_name, role: user.role, parish_id: user.parish_id, status: user.status };
+  cachePut(cKey, safe, 600);
+  return safe;
 }
 
 // ── Parishes ─────────────────────────────────────────────────────
 
 function getParishes(user) {
-  var all  = sheetToObjects(getSheet('parishes'));
+  var cKey = 'ref_parishes';
+  var all  = cacheGet(cKey);
+  if (!all) {
+    all = sheetToObjects(getSheet('parishes'));
+    cachePut(cKey, all, 300); // 5 min
+  }
   var data = user.role === 'admin' ? all : all.filter(function(p) { return p.status === 'active'; });
   return { data: data };
 }
@@ -213,73 +253,121 @@ function insertParish(user, p) {
   var e = adminOnly(user); if (e) return e;
   var id = genId();
   getSheet('parishes').appendRow([id, p.parish_name, p.city||'', p.coordinator_name||'', p.coordinator_phone||'', p.coordinator_email||'', 'active', now()]);
+  cacheRemove('ref_parishes');
   return { success: true, id: id };
 }
 
 function updateParish(user, p) {
   var e = adminOnly(user); if (e) return e;
-  return updateRowFields(getSheet('parishes'), p.id, {
+  var r = updateRowFields(getSheet('parishes'), p.id, {
     parish_name: p.parish_name, city: p.city||'', coordinator_name: p.coordinator_name||'',
     coordinator_phone: p.coordinator_phone||'', coordinator_email: p.coordinator_email||'', status: p.status
   });
+  if (r.success) cacheRemove('ref_parishes');
+  return r;
 }
 
 function deleteParish(user, p) {
   var e = adminOnly(user); if (e) return e;
-  return deleteById(getSheet('parishes'), p.id);
+  var r = deleteById(getSheet('parishes'), p.id);
+  if (r.success) cacheRemove('ref_parishes');
+  return r;
 }
 
 // ── Stages ────────────────────────────────────────────────────────
 
 function getStages() {
-  var stages = sheetToObjects(getSheet('catechesis_stages'));
-  stages.sort(function(a, b) { return (Number(a.sort_order)||0) - (Number(b.sort_order)||0); });
-  return { data: stages };
+  var cKey = 'ref_stages';
+  var data = cacheGet(cKey);
+  if (!data) {
+    data = sheetToObjects(getSheet('catechesis_stages'));
+    data.sort(function(a,b){ return (Number(a.sort_order)||0)-(Number(b.sort_order)||0); });
+    cachePut(cKey, data, 1800); // 30 min — stages rarely change
+  }
+  return { data: data };
 }
 
 // ── Age Groups ────────────────────────────────────────────────────
 
-function getAgeGroups() { return { data: sheetToObjects(getSheet('age_groups')) }; }
+function getAgeGroups() {
+  var cKey = 'ref_ageGroups';
+  var data = cacheGet(cKey);
+  if (!data) {
+    data = sheetToObjects(getSheet('age_groups'));
+    cachePut(cKey, data, 1800);
+  }
+  return { data: data };
+}
 
 function insertAgeGroup(user, p) {
   var e = adminOnly(user); if (e) return e;
   var id = genId();
   getSheet('age_groups').appendRow([id, p.age_group, p.description||'']);
+  cacheRemove('ref_ageGroups');
   return { success: true, id: id };
 }
 
 function updateAgeGroup(user, p) {
   var e = adminOnly(user); if (e) return e;
-  return updateRowFields(getSheet('age_groups'), p.id, { age_group: p.age_group, description: p.description||'' });
+  var r = updateRowFields(getSheet('age_groups'), p.id, { age_group: p.age_group, description: p.description||'' });
+  if (r.success) cacheRemove('ref_ageGroups');
+  return r;
 }
 
 function deleteAgeGroup(user, p) {
   var e = adminOnly(user); if (e) return e;
-  return deleteById(getSheet('age_groups'), p.id);
+  var r = deleteById(getSheet('age_groups'), p.id);
+  if (r.success) cacheRemove('ref_ageGroups');
+  return r;
 }
 
 // ── Books ─────────────────────────────────────────────────────────
 
-function getBooks() { return { data: sheetToObjects(getSheet('books')) }; }
+function getBooks() {
+  var cKey = 'ref_books';
+  var data = cacheGet(cKey);
+  if (!data) {
+    data = sheetToObjects(getSheet('books'));
+    cachePut(cKey, data, 600); // 10 min
+  }
+  return { data: data };
+}
 
 function insertBook(user, p) {
   var e = adminOnly(user); if (e) return e;
   var id = genId();
   getSheet('books').appendRow([id, p.book_name, p.author||'', p.publisher||'', p.recommended_stage||'', p.recommended_age||'', p.year||'', now()]);
+  cacheRemove('ref_books');
   return { success: true, id: id };
 }
 
 function updateBook(user, p) {
   var e = adminOnly(user); if (e) return e;
-  return updateRowFields(getSheet('books'), p.id, {
+  var r = updateRowFields(getSheet('books'), p.id, {
     book_name: p.book_name, author: p.author||'', publisher: p.publisher||'',
     recommended_stage: p.recommended_stage||'', recommended_age: p.recommended_age||'', year: p.year||''
   });
+  if (r.success) cacheRemove('ref_books');
+  return r;
 }
 
 function deleteBook(user, p) {
   var e = adminOnly(user); if (e) return e;
-  return deleteById(getSheet('books'), p.id);
+  var r = deleteById(getSheet('books'), p.id);
+  if (r.success) cacheRemove('ref_books');
+  return r;
+}
+
+// ── Init batch ────────────────────────────────────────────────────
+// Returns all reference data in a single HTTP round-trip
+
+function getInit(user) {
+  return {
+    stages:    getStages().data,
+    ageGroups: getAgeGroups().data,
+    parishes:  getParishes(user).data,
+    books:     getBooks().data,
+  };
 }
 
 // ── Users ─────────────────────────────────────────────────────────

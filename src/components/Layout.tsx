@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useReferenceData } from '../hooks/useReferenceData';
 import { c, r, shadow } from '../styles/theme';
 import {
   IconDashboard, IconList, IconBook, IconUsers,
@@ -35,6 +36,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { session, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  useReferenceData(); // prefetch all reference data in one batch call
 
   const nav = isAdmin ? ADMIN_NAV : PARISH_NAV;
 
